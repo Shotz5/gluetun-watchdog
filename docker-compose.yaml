@@ -1,0 +1,25 @@
+services:
+  gluetun-watchdog:
+    build: ./gluetun-watchdog
+    image: gluetun-watchdog:local
+    restart: unless-stopped
+    extra_hosts:
+      - portainer.akitsul.dev:192.168.50.104
+    environment:
+      - PIA_USER=p1111221
+      - PIA_PASS=${PIA_PASS}
+      - PIA_REGION=ca_vancouver
+      - PORTAINER_URL=https://portainer.akitsul.dev
+      - PORTAINER_API_KEY=${PORTAINER_API_KEY}
+      - PORTAINER_STACK_ID=7
+      - PORTAINER_ENDPOINT_ID=3
+      - GLUETUN_CONTAINER=gluetun
+      - DEPENDENT_CONTAINERS=qbittorrent autobrr
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  pia-wg-config:
+    build: ./pia-wg-config
+    image: pia-wg-config:local
+    profiles: ["tools"]
+
