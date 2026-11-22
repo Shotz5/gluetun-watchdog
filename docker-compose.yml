@@ -9,7 +9,6 @@ services:
       - PIA_USER=p1111221
       - PIA_PASS=${PIA_PASS}
       - PIA_REGION=ca_vancouver
-      - PIA_WG_VERBOSE=true   # troubleshooting only; remove once it works
       - PORTAINER_URL=https://portainer.akitsul.dev
       - PORTAINER_API_KEY=${PORTAINER_API_KEY}
       - PORTAINER_STACK_ID=7
@@ -18,3 +17,4 @@ services:
       - DEPENDENT_SERVICES=qbittorrent autobrr
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - /mnt/AppConfigs/Gluetun Config:/gluetun

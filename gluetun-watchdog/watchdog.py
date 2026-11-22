@@ -21,6 +21,8 @@ CHECK_INTERVAL = 30   # seconds between health checks
 BAD_CHECKS_BEFORE_ACTING = 4
 COOLDOWN = 15 * 60    # minimum seconds between regenerations
 COMPOSE_PROJECT = None  # looked up from Portainer at startup
+# Where gluetun saves PIA's forwarded port; it's only valid for the old server
+SAVED_PORT_FILE = "/gluetun/piaportforward.json"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger()
@@ -99,11 +101,26 @@ def update_stack_variables(new_values):
     )
 
 
+def delete_saved_port():
+    """Delete gluetun's saved forwarded port so it asks the new server for one."""
+    container = find_container(GLUETUN_SERVICE)
+    if container is None or container.status != "running":
+        log.warning("gluetun isn't running, so the saved port file wasn't deleted")
+        return
+    result = container.exec_run(["rm", "-f", SAVED_PORT_FILE])
+    if result.exit_code == 0:
+        log.info("Deleted saved forwarded port (%s)", SAVED_PORT_FILE)
+    else:
+        log.warning("Couldn't delete %s: %s", SAVED_PORT_FILE, result.output.decode().strip())
+
+
 # --- Recovery -----------------------------------------------------------
 def recover():
     log.info("Generating new WireGuard credentials")
     new_values = wireguard.generate_config(PIA_USER, PIA_PASS, PIA_REGION)
     log.info("New server: %s (%s)", new_values["PIA_SERVER_CN"], new_values["WIREGUARD_ENDPOINT_IP"])
+
+    delete_saved_port()
 
     log.info("Updating Portainer stack %s and redeploying", STACK_ID)
     update_stack_variables(new_values)
