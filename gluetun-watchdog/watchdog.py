@@ -12,6 +12,9 @@ DEPENDENT_SERVICES = os.getenv("DEPENDENT_SERVICES", "qbittorrent autobrr").spli
 PIA_USER = os.environ["PIA_USER"]
 PIA_PASS = os.environ["PIA_PASS"]
 PIA_REGION = os.getenv("PIA_REGION", "ca_vancouver")
+# Passes -v to pia-wg-config for troubleshooting. Its verbose output may
+# include auth details, so turn this back off once things work.
+PIA_WG_VERBOSE = os.getenv("PIA_WG_VERBOSE", "false").lower() in ("1", "true", "yes")
 PORTAINER_URL = os.environ["PORTAINER_URL"].rstrip("/")
 STACK_ID = os.environ["PORTAINER_STACK_ID"]
 ENDPOINT_ID = os.environ["PORTAINER_ENDPOINT_ID"]
@@ -77,9 +80,12 @@ def run_pia_wg_config():
     stdout and stderr are read separately so a failure shows the tool's
     actual error message (and never the command line, which has the password).
     """
-    container = docker_client.containers.run(
-        "pia-wg-config:local", ["-r", PIA_REGION, PIA_USER, PIA_PASS], detach=True
-    )
+    args = ["-r", PIA_REGION]
+    if PIA_WG_VERBOSE:
+        args.append("-v")
+    args += [PIA_USER, PIA_PASS]
+
+    container = docker_client.containers.run("pia-wg-config:local", args, detach=True)
     try:
         exit_code = container.wait(timeout=120)["StatusCode"]
         stdout = container.logs(stdout=True, stderr=False).decode().strip()
