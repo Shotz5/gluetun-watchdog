@@ -19,7 +19,6 @@ ENDPOINT_ID = os.environ["PORTAINER_ENDPOINT_ID"]
 CHECK_INTERVAL = 30   # seconds between health checks
 BAD_CHECKS_BEFORE_ACTING = 4
 COOLDOWN = 15 * 60    # minimum seconds between regenerations
-FORCE_FILE = "/tmp/force"
 COMPOSE_PROJECT = None  # looked up from Portainer at startup
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -49,11 +48,16 @@ def health_of(container):
 
 
 # --- Gluetun health -----------------------------------------------------
-def gluetun_is_bad():
+def gluetun_is_unhealthy():
+    """True only when gluetun is running and Docker reports it unhealthy.
+
+    A missing or stopped container is left alone: new credentials won't help
+    a container that isn't running.
+    """
     container = find_container(GLUETUN_SERVICE)
-    if container is None:
-        return True
-    return container.status != "running" or health_of(container) == "unhealthy"
+    if container is None or container.status != "running":
+        return False
+    return health_of(container) == "unhealthy"
 
 
 def wait_until_healthy(timeout=180):
@@ -67,11 +71,34 @@ def wait_until_healthy(timeout=180):
 
 
 # --- New WireGuard credentials -------------------------------------------
+def run_pia_wg_config():
+    """Run pia-wg-config once and return what it prints to stdout.
+
+    stdout and stderr are read separately so a failure shows the tool's
+    actual error message (and never the command line, which has the password).
+    """
+    container = docker_client.containers.run(
+        "pia-wg-config:local", ["-r", PIA_REGION, PIA_USER, PIA_PASS], detach=True
+    )
+    try:
+        exit_code = container.wait(timeout=120)["StatusCode"]
+        stdout = container.logs(stdout=True, stderr=False).decode().strip()
+        stderr = container.logs(stdout=False, stderr=True).decode().strip()
+    finally:
+        container.remove(force=True)
+
+    if exit_code != 0:
+        raise RuntimeError(
+            f"pia-wg-config exited with status {exit_code}\n"
+            f"  stdout: {stdout or '(empty)'}\n"
+            f"  stderr: {stderr or '(empty)'}"
+        )
+    return stdout
+
+
 def generate_wireguard_config():
-    """Run pia-wg-config once and parse the config it prints."""
-    output = docker_client.containers.run(
-        "pia-wg-config:local", ["-r", PIA_REGION, PIA_USER, PIA_PASS], remove=True
-    ).decode()
+    """Run pia-wg-config and parse the config it prints."""
+    output = run_pia_wg_config()
 
     values = {}
     for line in output.splitlines():
@@ -166,16 +193,11 @@ def main():
     last_recovery = 0
 
     while True:
-        bad_checks = bad_checks + 1 if gluetun_is_bad() else 0
-        forced = os.path.exists(FORCE_FILE)
+        bad_checks = bad_checks + 1 if gluetun_is_unhealthy() else 0
         cooled_down = time.time() - last_recovery >= COOLDOWN
 
-        if forced or (bad_checks >= BAD_CHECKS_BEFORE_ACTING and cooled_down):
-            if forced:
-                os.remove(FORCE_FILE)
-                log.info("Manual trigger")
-            else:
-                log.info("gluetun has been unhealthy for %d checks", bad_checks)
+        if bad_checks >= BAD_CHECKS_BEFORE_ACTING and cooled_down:
+            log.info("gluetun has been unhealthy for %d checks", bad_checks)
             try:
                 recover()
             except Exception:
