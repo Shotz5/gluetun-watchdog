@@ -18,12 +18,3 @@ services:
       - DEPENDENT_SERVICES=qbittorrent autobrr
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-
-  pia-wg-config:
-    build: ./pia-wg-config
-    image: pia-wg-config:local
-    # Only here so the stack builds the image the watchdog runs.
-    # Starts, exits immediately, and stays stopped.
-    entrypoint: ["true"]
-    restart: "no"
-

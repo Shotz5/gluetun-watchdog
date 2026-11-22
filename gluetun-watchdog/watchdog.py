@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import time
@@ -6,15 +5,14 @@ import time
 import docker
 import requests
 
+import wireguard
+
 # --- Settings -----------------------------------------------------------
 GLUETUN_SERVICE = os.getenv("GLUETUN_SERVICE", "gluetun")
 DEPENDENT_SERVICES = os.getenv("DEPENDENT_SERVICES", "qbittorrent autobrr").split()
 PIA_USER = os.environ["PIA_USER"]
 PIA_PASS = os.environ["PIA_PASS"]
 PIA_REGION = os.getenv("PIA_REGION", "ca_vancouver")
-# Passes -v to pia-wg-config for troubleshooting. Its verbose output may
-# include auth details, so turn this back off once things work.
-PIA_WG_VERBOSE = os.getenv("PIA_WG_VERBOSE", "false").lower() in ("1", "true", "yes")
 PORTAINER_URL = os.environ["PORTAINER_URL"].rstrip("/")
 STACK_ID = os.environ["PORTAINER_STACK_ID"]
 ENDPOINT_ID = os.environ["PORTAINER_ENDPOINT_ID"]
@@ -73,67 +71,6 @@ def wait_until_healthy(timeout=180):
     return False
 
 
-# --- New WireGuard credentials -------------------------------------------
-def run_pia_wg_config():
-    """Run pia-wg-config once and return what it prints to stdout.
-
-    stdout and stderr are read separately so a failure shows the tool's
-    actual error message (and never the command line, which has the password).
-    """
-    args = ["-r", PIA_REGION]
-    if PIA_WG_VERBOSE:
-        args.append("-v")
-    args += [PIA_USER, PIA_PASS]
-
-    container = docker_client.containers.run("pia-wg-config:local", args, detach=True)
-    try:
-        exit_code = container.wait(timeout=120)["StatusCode"]
-        stdout = container.logs(stdout=True, stderr=False).decode().strip()
-        stderr = container.logs(stdout=False, stderr=True).decode().strip()
-    finally:
-        container.remove(force=True)
-
-    if exit_code != 0:
-        raise RuntimeError(
-            f"pia-wg-config exited with status {exit_code}\n"
-            f"  stdout: {stdout or '(empty)'}\n"
-            f"  stderr: {stderr or '(empty)'}"
-        )
-    return stdout
-
-
-def generate_wireguard_config():
-    """Run pia-wg-config and parse the config it prints."""
-    output = run_pia_wg_config()
-
-    values = {}
-    for line in output.splitlines():
-        if "=" in line:
-            key, _, value = line.partition("=")
-            values[key.strip()] = value.strip()
-
-    endpoint_ip, endpoint_port = values["Endpoint"].rsplit(":", 1)
-    return {
-        "WIREGUARD_PRIVATE_KEY": values["PrivateKey"],
-        "WIREGUARD_PUBLIC_KEY": values["PublicKey"],
-        "WIREGUARD_ADDRESSES": values["Address"],
-        "WIREGUARD_ENDPOINT_IP": endpoint_ip,
-        "WIREGUARD_ENDPOINT_PORT": endpoint_port,
-    }
-
-
-def pia_server_name(ip):
-    """Look up the server's name (cn) in PIA's public server list."""
-    response = requests.get("https://serverlist.piaservers.net/vpninfo/servers/v6", timeout=30)
-    response.raise_for_status()
-    data = json.loads(response.text.splitlines()[0])  # line 1 is JSON, the rest is a signature
-    for region in data["regions"]:
-        for server in region["servers"].get("wg", []):
-            if server["ip"] == ip:
-                return server["cn"]
-    raise RuntimeError(f"No PIA server found with IP {ip}")
-
-
 # --- Portainer ----------------------------------------------------------
 def portainer_api(method, path, **kwargs):
     response = portainer.request(method, f"{PORTAINER_URL}/api{path}", timeout=120, **kwargs)
@@ -165,8 +102,7 @@ def update_stack_variables(new_values):
 # --- Recovery -----------------------------------------------------------
 def recover():
     log.info("Generating new WireGuard credentials")
-    new_values = generate_wireguard_config()
-    new_values["PIA_SERVER_CN"] = pia_server_name(new_values["WIREGUARD_ENDPOINT_IP"])
+    new_values = wireguard.generate_config(PIA_USER, PIA_PASS, PIA_REGION)
     log.info("New server: %s (%s)", new_values["PIA_SERVER_CN"], new_values["WIREGUARD_ENDPOINT_IP"])
 
     log.info("Updating Portainer stack %s and redeploying", STACK_ID)
