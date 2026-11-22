@@ -13,13 +13,16 @@ services:
       - PORTAINER_API_KEY=${PORTAINER_API_KEY}
       - PORTAINER_STACK_ID=7
       - PORTAINER_ENDPOINT_ID=3
-      - GLUETUN_CONTAINER=gluetun
-      - DEPENDENT_CONTAINERS=qbittorrent autobrr
+      - GLUETUN_SERVICE=gluetun
+      - DEPENDENT_SERVICES=qbittorrent autobrr
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
   pia-wg-config:
     build: ./pia-wg-config
     image: pia-wg-config:local
-    profiles: ["tools"]
+    # Only here so the stack builds the image the watchdog runs.
+    # Starts, exits immediately, and stays stopped.
+    entrypoint: ["true"]
+    restart: "no"
 

@@ -7,8 +7,8 @@ import docker
 import requests
 
 # --- Settings -----------------------------------------------------------
-GLUETUN = os.getenv("GLUETUN_CONTAINER", "gluetun")
-DEPENDENTS = os.getenv("DEPENDENT_CONTAINERS", "qbittorrent autobrr").split()
+GLUETUN_SERVICE = os.getenv("GLUETUN_SERVICE", "gluetun")
+DEPENDENT_SERVICES = os.getenv("DEPENDENT_SERVICES", "qbittorrent autobrr").split()
 PIA_USER = os.environ["PIA_USER"]
 PIA_PASS = os.environ["PIA_PASS"]
 PIA_REGION = os.getenv("PIA_REGION", "ca_vancouver")
@@ -20,6 +20,7 @@ CHECK_INTERVAL = 30   # seconds between health checks
 BAD_CHECKS_BEFORE_ACTING = 4
 COOLDOWN = 15 * 60    # minimum seconds between regenerations
 FORCE_FILE = "/tmp/force"
+COMPOSE_PROJECT = None  # looked up from Portainer at startup
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger()
@@ -28,21 +29,38 @@ portainer = requests.Session()
 portainer.headers["X-API-Key"] = os.environ["PORTAINER_API_KEY"]
 
 
+# --- Finding containers ------------------------------------------------
+def find_container(service):
+    """Find a container by its Compose project + service labels.
+
+    Container names change when Portainer recreates them, so look them up
+    by label every time instead of by name. Returns None if not found.
+    """
+    matches = docker_client.containers.list(all=True, filters={"label": [
+        f"com.docker.compose.project={COMPOSE_PROJECT}",
+        f"com.docker.compose.service={service}",
+    ]})
+    running = [c for c in matches if c.status == "running"]
+    return (running or matches or [None])[0]
+
+
+def health_of(container):
+    return container.attrs["State"].get("Health", {}).get("Status")
+
+
 # --- Gluetun health -----------------------------------------------------
 def gluetun_is_bad():
-    try:
-        container = docker_client.containers.get(GLUETUN)
-    except docker.errors.NotFound:
+    container = find_container(GLUETUN_SERVICE)
+    if container is None:
         return True
-    health = container.attrs["State"].get("Health", {}).get("Status")
-    return container.status != "running" or health == "unhealthy"
+    return container.status != "running" or health_of(container) == "unhealthy"
 
 
 def wait_until_healthy(timeout=180):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        container = docker_client.containers.get(GLUETUN)
-        if container.attrs["State"].get("Health", {}).get("Status") == "healthy":
+        container = find_container(GLUETUN_SERVICE)
+        if container is not None and health_of(container) == "healthy":
             return True
         time.sleep(5)
     return False
@@ -126,13 +144,24 @@ def recover():
     else:
         log.warning("gluetun did not become healthy within 3 minutes")
 
-    for name in DEPENDENTS:
-        log.info("Restarting %s", name)
-        docker_client.containers.get(name).restart()
+    for service in DEPENDENT_SERVICES:
+        container = find_container(service)
+        if container is None:
+            log.warning("No container found for service %s", service)
+            continue
+        log.info("Restarting %s", container.name)
+        container.restart()
 
 
 def main():
-    log.info("Watching %s", GLUETUN)
+    global COMPOSE_PROJECT
+    # Portainer uses the stack's name as the Compose project name
+    COMPOSE_PROJECT = os.getenv("COMPOSE_PROJECT") or portainer_api("GET", f"/stacks/{STACK_ID}")["Name"]
+    gluetun = find_container(GLUETUN_SERVICE)
+    if gluetun is None:
+        log.warning("No container found for service %s in project %s", GLUETUN_SERVICE, COMPOSE_PROJECT)
+    else:
+        log.info("Watching %s (project %s, service %s)", gluetun.name, COMPOSE_PROJECT, GLUETUN_SERVICE)
     bad_checks = 0
     last_recovery = 0
 
